@@ -24,7 +24,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
@@ -170,80 +169,17 @@ func (evm *EVM) Interpreter() *EVMInterpreter {
 // the necessary steps to create accounts and reverses the state in case of an
 // execution error or failed value transfer.
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *uint256.Int) (ret []byte, leftOverGas uint64, err error) {
-	// Capture the tracer start/end events in debug mode
-	if evm.Config.Tracer != nil {
-		evm.captureBegin(evm.depth, CALL, caller.Address(), addr, input, gas, value.ToBig())
-		defer func(startGas uint64) {
-			evm.captureEnd(evm.depth, startGas, leftOverGas, ret, err)
-		}(gas)
-	}
-	// Fail if we're trying to execute above the call depth limit
-	if evm.depth > int(params.CallCreateDepth) {
-		return nil, gas, ErrDepth
-	}
-	// Fail if we're trying to transfer more than the available balance
-	if !value.IsZero() && !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
-		return nil, gas, ErrInsufficientBalance
-	}
-	snapshot := evm.StateDB.Snapshot()
-	p, isPrecompile := evm.precompile(addr)
-
-	if !evm.StateDB.Exist(addr) {
-		if !isPrecompile && evm.chainRules.IsEIP4762 {
-			// add proof of absence to witness
-			wgas := evm.AccessEvents.AddAccount(addr, false)
-			if gas < wgas {
-				evm.StateDB.RevertToSnapshot(snapshot)
-				return nil, 0, ErrOutOfGas
-			}
-			gas -= wgas
-		}
-
-		if !isPrecompile && evm.chainRules.IsEIP158 && value.IsZero() {
-			// Calling a non-existing account, don't do anything.
-			return nil, gas, nil
-		}
-		evm.StateDB.CreateAccount(addr)
-	}
-	evm.Context.Transfer(evm.StateDB, caller.Address(), addr, value)
-
-	if isPrecompile {
-		ret, gas, err = RunPrecompiledContract(p, input, gas, evm.Config.Tracer)
-	} else {
-		// Initialise a new contract and set the code that is to be used by the EVM.
-		// The contract is a scoped environment for this execution context only.
-		code := evm.StateDB.GetCode(addr)
-		if witness := evm.StateDB.Witness(); witness != nil {
-			witness.AddCode(code)
-		}
-		if len(code) == 0 {
-			ret, err = nil, nil // gas is unchanged
-		} else {
-			addrCopy := addr
-			// If the account has no code, we can abort here
-			// The depth-check is already done, and precompiles handled above
-			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
-			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
-			ret, err = evm.interpreter.Run(contract, input, false)
-			gas = contract.Gas
-		}
-	}
-	// When an error was returned by the EVM or when setting the creation code
-	// above we revert to the snapshot and consume any gas remaining. Additionally,
-	// when we're in homestead this also counts for code storage gas errors.
-	if err != nil {
-		evm.StateDB.RevertToSnapshot(snapshot)
-		if err != ErrExecutionReverted {
-			if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
-				evm.Config.Tracer.OnGasChange(gas, 0, tracing.GasChangeCallFailedExecution)
-			}
-
-			gas = 0
-		}
-		// TODO: consider clearing up unused snapshots:
-		//} else {
-		//	evm.StateDB.DiscardSnapshot(snapshot)
-	}
+	kevm := NewKEVM(evm.Context, evm.TxContext, evm.StateDB, evm.chainConfig, evm.chainRules)
+	var schedule = kevm.getSchedule()
+	var block = kevm.getBlock()
+	var code = evm.StateDB.GetCode(addr)
+	var message = kevm.getMessage(caller, addr, false, gas, value, input, code)
+	var substate = kevm.getSubstate()
+	result, gas := kevm.executeCallFrame(schedule, block, message, substate)
+	kevm.applySubstate(substate)
+	ret = kevm.getOutput(result)
+	err = kevm.getError(result)
+	kevm.cleanup(block, message, substate, result)
 	return ret, gas, err
 }
 
@@ -428,101 +364,29 @@ func (c *codeAndHash) Hash() common.Hash {
 
 // create creates a new contract using code as deployment code.
 func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64, value *uint256.Int, address common.Address, typ OpCode) (ret []byte, createAddress common.Address, leftOverGas uint64, err error) {
-	if evm.Config.Tracer != nil {
-		evm.captureBegin(evm.depth, typ, caller.Address(), address, codeAndHash.code, gas, value.ToBig())
-		defer func(startGas uint64) {
-			evm.captureEnd(evm.depth, startGas, leftOverGas, ret, err)
-		}(gas)
-	}
-	// Depth check execution. Fail if we're trying to execute above the
-	// limit.
-	if evm.depth > int(params.CallCreateDepth) {
-		return nil, common.Address{}, gas, ErrDepth
-	}
-	if !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
-		return nil, common.Address{}, gas, ErrInsufficientBalance
-	}
 	nonce := evm.StateDB.GetNonce(caller.Address())
 	if nonce+1 < nonce {
 		return nil, common.Address{}, gas, ErrNonceUintOverflow
 	}
 	evm.StateDB.SetNonce(caller.Address(), nonce+1)
 
-	// Charge the contract creation init gas in verkle mode
-	if evm.chainRules.IsEIP4762 {
-		statelessGas := evm.AccessEvents.ContractCreatePreCheckGas(address)
-		if statelessGas > gas {
-			return nil, common.Address{}, 0, ErrOutOfGas
-		}
-		if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
-			evm.Config.Tracer.OnGasChange(gas, gas-statelessGas, tracing.GasChangeWitnessContractCollisionCheck)
-		}
-		gas = gas - statelessGas
-	}
-
 	// We add this to the access list _before_ taking a snapshot. Even if the
 	// creation fails, the access-list change should not be rolled back.
 	if evm.chainRules.IsEIP2929 {
 		evm.StateDB.AddAddressToAccessList(address)
 	}
-	// Ensure there's no existing contract already at the designated address.
-	// Account is regarded as existent if any of these three conditions is met:
-	// - the nonce is non-zero
-	// - the code is non-empty
-	// - the storage is non-empty
-	contractHash := evm.StateDB.GetCodeHash(address)
-	storageRoot := evm.StateDB.GetStorageRoot(address)
-	if evm.StateDB.GetNonce(address) != 0 ||
-		(contractHash != (common.Hash{}) && contractHash != types.EmptyCodeHash) || // non-empty code
-		(storageRoot != (common.Hash{}) && storageRoot != types.EmptyRootHash) { // non-empty storage
-		if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
-			evm.Config.Tracer.OnGasChange(gas, 0, tracing.GasChangeCallFailedExecution)
-		}
-		return nil, common.Address{}, 0, ErrContractAddressCollision
-	}
-	// Create a new account on the state only if the object was not present.
-	// It might be possible the contract code is deployed to a pre-existent
-	// account with non-zero balance.
-	snapshot := evm.StateDB.Snapshot()
-	if !evm.StateDB.Exist(address) {
-		evm.StateDB.CreateAccount(address)
-	}
-	// CreateContract means that regardless of whether the account previously existed
-	// in the state trie or not, it _now_ becomes created as a _contract_ account.
-	// This is performed _prior_ to executing the initcode,  since the initcode
-	// acts inside that account.
-	evm.StateDB.CreateContract(address)
 
-	if evm.chainRules.IsEIP158 {
-		evm.StateDB.SetNonce(address, 1)
-	}
-	// Charge the contract creation init gas in verkle mode
-	if evm.chainRules.IsEIP4762 {
-		statelessGas := evm.AccessEvents.ContractCreateInitGas(address)
-		if statelessGas > gas {
-			return nil, common.Address{}, 0, ErrOutOfGas
-		}
-		if evm.Config.Tracer != nil && evm.Config.Tracer.OnGasChange != nil {
-			evm.Config.Tracer.OnGasChange(gas, gas-statelessGas, tracing.GasChangeWitnessContractInit)
-		}
-		gas = gas - statelessGas
-	}
-	evm.Context.Transfer(evm.StateDB, caller.Address(), address, value)
-
-	// Initialise a new contract and set the code that is to be used by the EVM.
-	// The contract is a scoped environment for this execution context only.
-	contract := NewContract(caller, AccountRef(address), value, gas)
-	contract.SetCodeOptionalHash(&address, codeAndHash)
-	contract.IsDeployment = true
-
-	ret, err = evm.initNewContract(contract, address, value)
-	if err != nil && (evm.chainRules.IsHomestead || err != ErrCodeStoreOutOfGas) {
-		evm.StateDB.RevertToSnapshot(snapshot)
-		if err != ErrExecutionReverted {
-			contract.UseGas(contract.Gas, evm.Config.Tracer, tracing.GasChangeCallFailedExecution)
-		}
-	}
-	return ret, address, contract.Gas, err
+	kevm := NewKEVM(evm.Context, evm.TxContext, evm.StateDB, evm.chainConfig, evm.chainRules)
+	var schedule = kevm.getSchedule()
+	var block = kevm.getBlock()
+	var message = kevm.getMessage(caller, address, true, gas, value, []byte{}, codeAndHash.code)
+	var substate = kevm.getSubstate()
+	result, gas := kevm.executeCallFrame(schedule, block, message, substate)
+	kevm.applySubstate(substate)
+	ret = kevm.getOutput(result)
+	err = kevm.getError(result)
+	kevm.cleanup(block, message, substate, result)
+	return ret, address, gas, err
 }
 
 // initNewContract runs a new contract's creation code, performs checks on the
