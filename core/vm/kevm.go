@@ -129,17 +129,7 @@ func (kevm *KEVM) getMessage(caller ContractRef, addr common.Address, isCreate b
 }
 
 func (kevm *KEVM) getSubstate() unsafe.Pointer {
-  var substate = C.make_substate()
-  for addr, idx := range kevm.StateDB.GetAccessList().GetAddresses() {
-    C.access_account(substate, make_160(addr))
-    if idx != -1 {
-	    for slot, _ := range kevm.StateDB.GetAccessList().GetSlots()[idx] {
-		    slot_int := new(uint256.Int).SetBytes(slot.Bytes())
-		    C.access_storage(substate, make_160(addr), make_256(slot_int))
-	    }
-    }
-  }
-  return substate
+  return C.make_substate()
 }
 
 func (kevm *KEVM) executeCallFrame(schedule C.schedule_t, block unsafe.Pointer, message unsafe.Pointer, substate unsafe.Pointer) (result unsafe.Pointer, gas uint64) {
@@ -174,12 +164,6 @@ func (kevm *KEVM) applySubstate(substate unsafe.Pointer) {
 	if refund != 0 {
 	  kevm.StateDB.AddRefund(refund)
         }
-	for i := 0; i < int(C.get_accessed_accounts_len(substate)); i++ {
-		kevm.StateDB.AddAddressToAccessList(make_address_free(C.get_accessed_address(substate, C.ulong(i))))
-		for j := 0; j < int(C.get_accessed_storage_len(substate, C.ulong(i))); j++ {
-			kevm.StateDB.AddSlotToAccessList(make_address_free(C.get_accessed_address(substate, C.ulong(i))), make_hash(C.get_accessed_storage(substate, C.ulong(i), C.ulong(j))))
-		}
-	}
 }
 
 func (kevm *KEVM) getOutput(result unsafe.Pointer) []byte {
@@ -315,6 +299,33 @@ func GethGetAccountOrigStorage(statedb C.int, acct_ptr unsafe.Pointer, key_ptr u
 //export GethGetBlockhash
 func GethGetBlockhash(statedb C.int, offset C.int) unsafe.Pointer {
 	return make_256_hash(hash[int(statedb)](uint64(offset)))
+}
+
+//export GethAccessAccount
+func GethAccessAccount(statedb C.int, acct_ptr unsafe.Pointer) {
+	addr := make_address(acct_ptr)
+	dbs[int(statedb)].AddAddressToAccessList(addr)
+}
+
+//export GethAccessedAccount
+func GethAccessedAccount(statedb C.int, acct_ptr unsafe.Pointer) C.bool {
+	addr := make_address(acct_ptr)
+	return C.bool(dbs[int(statedb)].AddressInAccessList(addr))
+}
+
+//export GethAccessStorage
+func GethAccessStorage(statedb C.int, acct_ptr unsafe.Pointer, key_ptr unsafe.Pointer) {
+	addr := make_address(acct_ptr)
+	key := make_hash(key_ptr)
+	dbs[int(statedb)].AddSlotToAccessList(addr, key)
+}
+
+//export GethAccessedStorage
+func GethAccessedStorage(statedb C.int, acct_ptr unsafe.Pointer, key_ptr unsafe.Pointer) C.bool {
+	addr := make_address(acct_ptr)
+	key := make_hash(key_ptr)
+	_, accessed := dbs[int(statedb)].SlotInAccessList(addr, key)
+	return C.bool(accessed)
 }
 
 //export GethPushState
