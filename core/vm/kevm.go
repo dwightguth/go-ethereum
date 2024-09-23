@@ -239,7 +239,7 @@ func GethSetAccountBalance(statedb C.int, acct_ptr unsafe.Pointer, balance_ptr u
 	if (balance.Gt(old_balance)) {
 		dbs[int(statedb)].AddBalance(addr, balance.Sub(balance, old_balance), tracing.BalanceChangeUnspecified)
 	} else if (balance.Lt(old_balance)) {
-		dbs[int(statedb)].SubBalance(addr, old_balance.Sub(old_balance, balance), tracing.BalanceChangeUnspecified)
+		dbs[int(statedb)].SubBalance(addr, new(uint256.Int).Sub(old_balance, balance), tracing.BalanceChangeUnspecified)
 	}
 }
 
