@@ -175,6 +175,9 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	var code = evm.StateDB.GetCode(addr)
 	var message = kevm.getMessage(caller, addr, false, gas, value, input, code)
 	var substate = kevm.getSubstate()
+	if witness := evm.StateDB.Witness(); witness != nil {
+		witness.AddCode(code)
+	}
 	result, gas := kevm.executeCallFrame(schedule, block, message, substate)
 	kevm.applySubstate(substate)
 	ret = kevm.getOutput(result)

@@ -246,7 +246,12 @@ func GethSetAccountBalance(statedb C.int, acct_ptr unsafe.Pointer, balance_ptr u
 //export GethGetAccountCode
 func GethGetAccountCode(statedb C.int, ptr unsafe.Pointer) unsafe.Pointer {
 	addr := make_address(ptr)
-	return C.CBytes(dbs[int(statedb)].GetCode(addr))
+	code := dbs[int(statedb)].GetCode(addr)
+	if witness := dbs[int(statedb)].Witness(); witness != nil {
+		witness.AddCode(code)
+	}
+
+	return C.CBytes(code)
 }
 
 //export GethGetAccountCodeLength
