@@ -231,16 +231,18 @@ func GethGetAccountBalance(statedb C.int, ptr unsafe.Pointer) unsafe.Pointer {
 	return make_256(dbs[int(statedb)].GetBalance(addr))
 }
 
-//export GethSetAccountBalance
-func GethSetAccountBalance(statedb C.int, acct_ptr unsafe.Pointer, balance_ptr unsafe.Pointer) {
+//export GethAddAccountBalance
+func GethAddAccountBalance(statedb C.int, acct_ptr unsafe.Pointer, balance_ptr unsafe.Pointer) {
 	addr := make_address(acct_ptr)
 	balance := make_uint256(balance_ptr)
-	old_balance := dbs[int(statedb)].GetBalance(addr)
-	if (balance.Gt(old_balance)) {
-		dbs[int(statedb)].AddBalance(addr, balance.Sub(balance, old_balance), tracing.BalanceChangeUnspecified)
-	} else if (balance.Lt(old_balance)) {
-		dbs[int(statedb)].SubBalance(addr, new(uint256.Int).Sub(old_balance, balance), tracing.BalanceChangeUnspecified)
-	}
+	dbs[int(statedb)].AddBalance(addr, balance, tracing.BalanceChangeUnspecified)
+}
+
+//export GethSubAccountBalance
+func GethSubAccountBalance(statedb C.int, acct_ptr unsafe.Pointer, balance_ptr unsafe.Pointer) {
+	addr := make_address(acct_ptr)
+	balance := make_uint256(balance_ptr)
+	dbs[int(statedb)].SubBalance(addr, balance, tracing.BalanceChangeUnspecified)
 }
 
 //export GethGetAccountCode
