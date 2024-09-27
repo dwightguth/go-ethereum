@@ -1,8 +1,8 @@
 package vm
 
 import (
-	// #cgo CPPFLAGS: -I/home/dwightguth/ukm/kllvm
-	// #cgo LDFLAGS: -lukmkllvm -L/home/dwightguth/ukm/kllvm -lkevm -L/home/dwightguth/.cache/kdist-de6b03f/evm-semantics/llvm
+	// #cgo CPPFLAGS: -I../../../ukm/kllvm
+	// #cgo LDFLAGS: -lukmkllvm -L../../../ukm/kllvm -lkevm -L../../../evm-semantics/libkevm
 	// #include <ukm_kllvm_c.h>
 	"C"
 	"errors"
