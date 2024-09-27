@@ -22,6 +22,7 @@ type KEVM struct {
 	StateDB StateDB
 
 	chainRules params.Rules
+	counter int
 }
 
 var (
@@ -38,6 +39,7 @@ func NewKEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfi
 		TxContext: txCtx,
 		StateDB: statedb,
 		chainRules: chainRules,
+		counter: counter,
 	}
         chainId, _ := uint256.FromBig(chainConfig.ChainID)
 	mutex.Lock()
@@ -202,6 +204,11 @@ func (kevm *KEVM) getError(result unsafe.Pointer) error {
 
 func (kevm *KEVM) cleanup(block unsafe.Pointer, message unsafe.Pointer, substate unsafe.Pointer, result unsafe.Pointer) {
 	C.cleanup_transaction(block, message, substate, result)
+	mutex.Lock()
+	delete(dbs, kevm.counter)
+	delete(hash, kevm.counter)
+	delete(snapshots, kevm.counter)
+	mutex.Unlock()
 }
 
 //export GethAddAccount
