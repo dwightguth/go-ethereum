@@ -226,8 +226,9 @@ func GethAddAccount(statedb C.int, ptr unsafe.Pointer) C.bool {
 		(storageRoot != (common.Hash{}) && storageRoot != types.EmptyRootHash) { // non-empty storage
 		return false
 	}
-
-	dbs[int(statedb)].CreateAccount(address)
+	if !dbs[int(statedb)].Exist(address) {
+		dbs[int(statedb)].CreateAccount(address)
+	}
 	dbs[int(statedb)].CreateContract(address)
 	return true
 }
