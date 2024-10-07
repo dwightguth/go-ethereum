@@ -2,8 +2,8 @@ package vm
 
 import (
 	// #cgo CPPFLAGS: -I../../../ukm/kllvm
-	// #cgo LDFLAGS: -lukmkllvm -L../../../ukm/kllvm -lkevm -L../../../evm-semantics/libkevm
-	// #include <ukm_kllvm_c.h>
+	// #cgo LDFLAGS: -lulmkllvm -L../../../ukm/kllvm -lkevm -L../../../evm-semantics/libkevm
+	// #include <ulm_kllvm_c.h>
 	"C"
 	"errors"
 	"sync"
